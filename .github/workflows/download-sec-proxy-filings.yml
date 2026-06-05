@@ -1,0 +1,106 @@
+name: Bulk download SEC proxy filings
+
+on:
+  workflow_dispatch:
+    inputs:
+      forms:
+        description: "Comma-separated SEC forms"
+        required: true
+        default: "DEFM14A,PREM14A"
+      start_year:
+        description: "Start year"
+        required: true
+        default: "1994"
+      end_year:
+        description: "End year; blank = current year"
+        required: false
+        default: ""
+      max_filings:
+        description: "Max filings to download; blank = no explicit limit"
+        required: false
+        default: ""
+      sleep_seconds:
+        description: "Delay between SEC requests"
+        required: true
+        default: "0.20"
+      artifact_retention_days:
+        description: "How long GitHub should keep the ZIP"
+        required: true
+        default: "7"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create output folder
+        run: mkdir -p output
+
+      - name: Download SEC filings
+        continue-on-error: true
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          FORMS: ${{ inputs.forms }}
+          START_YEAR: ${{ inputs.start_year }}
+          END_YEAR: ${{ inputs.end_year }}
+          MAX_FILINGS: ${{ inputs.max_filings }}
+          SLEEP_SECONDS: ${{ inputs.sleep_seconds }}
+          BATCH_SAVE_EVERY: "5"
+          OUTPUT_DIR: "output"
+          ZIP_PATH: "output/sec_proxy_filings.zip"
+        run: |
+          python scripts/download_proxy_filings.py || true
+
+      - name: Ensure ZIP exists even if nothing downloaded
+        if: always()
+        run: |
+          mkdir -p output
+          if [ ! -f output/sec_proxy_filings.zip ]; then
+            python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          out = Path("output")
+          out.mkdir(exist_ok=True)
+          readme = out / "README.txt"
+          readme.write_text("No filings were downloaded, but the workflow completed.\n", encoding="utf-8")
+          with ZipFile(out / "sec_proxy_filings.zip", "w", compression=ZIP_DEFLATED) as z:
+              z.write(readme, "README.txt")
+          PY
+          fi
+
+      - name: Upload ZIP artifact
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-proxy-filings-${{ github.run_id }}
+          path: output/sec_proxy_filings.zip
+          if-no-files-found: warn
+          retention-days: ${{ inputs.artifact_retention_days }}
+          compression-level: 0
+
+      - name: Write download link to summary
+        if: always()
+        run: |
+          echo "## SEC proxy filing ZIP" >> "$GITHUB_STEP_SUMMARY"
+          ARTIFACT_URL="${{ steps.upload.outputs.artifact-url }}"
+          if [ -n "$ARTIFACT_URL" ]; then
+            echo "[Download ZIP artifact]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Artifact URL was not returned. Open the run artifacts page:" >> "$GITHUB_STEP_SUMMARY"
+            echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The artifact contains whatever was downloaded before completion or failure." >> "$GITHUB_STEP_SUMMARY"
