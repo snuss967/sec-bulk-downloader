@@ -5,7 +5,6 @@ import json
 import os
 import re
 import signal
-import sys
 import time
 import traceback
 from dataclasses import dataclass, asdict
@@ -162,6 +161,7 @@ def load_manifest(manifest_path: Path) -> List[FilingRecord]:
         return []
 
     records: List[FilingRecord] = []
+
     with manifest_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -178,6 +178,7 @@ def load_manifest(manifest_path: Path) -> List[FilingRecord]:
                     bytes=int(row["bytes"]),
                 )
             )
+
     return records
 
 
@@ -208,6 +209,7 @@ def write_manifest(manifest_path: Path, records: List[FilingRecord]):
 
 def append_error(error_path: Path, message: str):
     error_path.parent.mkdir(parents=True, exist_ok=True)
+
     with error_path.open("a", encoding="utf-8") as f:
         f.write(f"\n--- {datetime.now(timezone.utc).isoformat()} ---\n")
         f.write(message.rstrip() + "\n")
@@ -310,6 +312,7 @@ def accession_from_filename(sec_filename: str) -> str:
 def local_filing_path(output_dir: Path, row: Dict[str, str]) -> Path:
     accession = accession_from_filename(row["filename"])
     company = safe_name(row["company"])
+
     return (
         output_dir
         / "filings"
@@ -347,7 +350,10 @@ def download_one_filing(
 
 
 def main() -> int:
+    global STOP_REQUESTED
+
     user_agent = env_str("SEC_USER_AGENT")
+
     if not user_agent:
         print(
             "WARNING: SEC_USER_AGENT is not set. Set a GitHub secret named "
@@ -356,7 +362,12 @@ def main() -> int:
         )
         user_agent = "sec-proxy-bulk-downloader contact@example.com"
 
-    forms = {x.strip().upper() for x in env_str("FORMS", "DEFM14A,PREM14A").split(",") if x.strip()}
+    forms = {
+        x.strip().upper()
+        for x in env_str("FORMS", "DEFM14A,PREM14A").split(",")
+        if x.strip()
+    }
+
     start_year = env_int("START_YEAR", 1994) or 1994
     end_year = env_int("END_YEAR", current_year()) or current_year()
     max_filings = env_int("MAX_FILINGS", None)
@@ -379,15 +390,18 @@ def main() -> int:
     completed_quarters: Set[str] = set(progress.get("completed_quarters", []))
 
     # Also dedupe off manifest in case progress.json is stale.
-    for r in records:
-        processed.add(r.sec_filename)
+    for record in records:
+        processed.add(record.sec_filename)
 
     client = SecClient(user_agent=user_agent, sleep_seconds=sleep_seconds)
 
     print(f"Forms: {sorted(forms)}", flush=True)
     print(f"Years: {start_year}-{end_year}", flush=True)
     print(f"Already downloaded: {len(records)}", flush=True)
-    print(f"Max filings: {max_filings if max_filings is not None else 'no explicit limit'}", flush=True)
+    print(
+        f"Max filings: {max_filings if max_filings is not None else 'no explicit limit'}",
+        flush=True,
+    )
 
     added_since_checkpoint = 0
 
@@ -396,6 +410,7 @@ def main() -> int:
             break
 
         quarter_key = f"{year}Q{qtr}"
+
         if quarter_key in completed_quarters:
             continue
 
@@ -404,12 +419,15 @@ def main() -> int:
 
         try:
             index_text = client.get_text(url)
+
         except HTTPError as exc:
             if exc.code == 404:
                 print(f"No index found for {quarter_key}; skipping.", flush=True)
                 continue
+
             append_error(error_path, f"Failed reading index {quarter_key}: {repr(exc)}")
             continue
+
         except Exception as exc:
             append_error(error_path, f"Failed reading index {quarter_key}: {repr(exc)}")
             continue
@@ -426,11 +444,13 @@ def main() -> int:
                 break
 
             sec_filename = row["filename"]
+
             if sec_filename in processed:
                 continue
 
             try:
                 record = download_one_filing(client, output_dir, row)
+
                 records.append(record)
                 processed.add(sec_filename)
                 quarter_hits += 1
@@ -491,23 +511,29 @@ def main() -> int:
 
     print(f"Done. Downloaded filings in manifest: {len(records)}", flush=True)
     print(f"ZIP: {zip_path}", flush=True)
+
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+
     except Exception:
         # Final failure mode: write error, rebuild whatever ZIP we can, exit 0
         # so the GitHub artifact upload step still runs.
         output_dir = Path(env_str("OUTPUT_DIR", "output"))
         zip_path = Path(env_str("ZIP_PATH", str(output_dir / "sec_proxy_filings.zip")))
+
         output_dir.mkdir(parents=True, exist_ok=True)
+
         append_error(output_dir / "errors.log", traceback.format_exc())
+
         try:
             rebuild_zip(output_dir, zip_path)
         except Exception:
             print("Failed to rebuild ZIP during fatal exception handling.", flush=True)
             print(traceback.format_exc(), flush=True)
+
         print("Fatal error captured; exiting 0 so artifact upload can run.", flush=True)
         raise SystemExit(0)
